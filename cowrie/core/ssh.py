@@ -112,7 +112,7 @@ class HoneyPotSSHFactory(factory.SSHFactory):
                 continue
             engine = x.split('_')[1]
             dbengine = 'database_' + engine
-            lcfg = ConfigParser.ConfigParser()
+            lcfg = ConfigParser.SafeConfigParser()
             lcfg.add_section(dbengine)
             for i in cfg.options(x):
                 lcfg.set(dbengine, i, cfg.get(x, i))
@@ -125,6 +125,7 @@ class HoneyPotSSHFactory(factory.SSHFactory):
                 globals(), locals(), ['dblog']).DBLogger(lcfg)
             log.addObserver(dblogger.emit)
             self.dbloggers.append(dblogger)
+            print "Loaded dblog plugin %s" % engine 
 
         # load new output modules
         self.output_plugins = [];
@@ -133,7 +134,7 @@ class HoneyPotSSHFactory(factory.SSHFactory):
                 continue
             engine = x.split('_')[1]
             output = 'output_' + engine
-            lcfg = ConfigParser.ConfigParser()
+            lcfg = ConfigParser.SafeConfigParser()
             lcfg.add_section(output)
             for i in cfg.options(x):
                 lcfg.set(output, i, cfg.get(x, i))
@@ -146,6 +147,7 @@ class HoneyPotSSHFactory(factory.SSHFactory):
                 ,globals(), locals(), ['output']).Output(lcfg)
             log.addObserver(output.emit)
             self.output_plugins.append(output)
+            print "Loaded output plugin %s" % engine 
 
     def buildProtocol(self, addr):
         """

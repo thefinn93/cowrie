@@ -8,6 +8,9 @@ from twisted.plugin import IPlugin
 from twisted.application.service import IServiceMaker
 from twisted.application import internet, service
 from twisted.cred import portal
+from twisted.python.log import startLogging
+from twisted.python.logfile import DailyLogFile
+
 
 from cowrie.core.config import readConfigFile
 from cowrie import core
@@ -25,10 +28,13 @@ class CowrieServiceMaker(object):
     description = "She sells sea shells by the sea shore."
     options = Options
 
+
     def makeService(self, options):
         """
         Construct a TCPServer from a factory defined in Cowrie.
         """
+
+#        startLogging(sys.stdout)
 
         if os.name == 'posix' and os.getuid() == 0:
             print 'ERROR: You must not run cowrie as root!'

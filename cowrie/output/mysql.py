@@ -9,6 +9,7 @@ import MySQLdb
 from twisted.internet import defer
 from twisted.enterprise import adbapi
 from twisted.python import log
+
 import cowrie.core.output
 
 class ReconnectingConnectionPool(adbapi.ConnectionPool):
@@ -44,35 +45,42 @@ class Output(cowrie.core.output.Output):
     """
 
     def __init__(self, cfg):
+        self.cfg = cfg
+        print "init mysql"
+        log.msg( "init mysql")
         cowrie.core.output.Output.__init__(self, cfg)
-        if cfg.has_option('output_mysql', 'port'):
-            port = int(cfg.get('output_mysql', 'port'))
-        else:
-            port = 3306
-        self.db = ReconnectingConnectionPool('MySQLdb',
-            host = cfg.get('output_mysql', 'host'),
-            db = cfg.get('output_mysql', 'database'),
-            user = cfg.get('output_mysql', 'username'),
-            passwd = cfg.get('output_mysql', 'password'),
-            port = port,
-            cp_min = 1,
-            cp_max = 1)
 
     def start(self):
-        pass
+        print "start mysql"
+        if self.cfg.has_option('output_mysql', 'port'):
+            port = int(self.cfg.get('output_mysql', 'port'))
+        else:
+            port = 3306
+#        self.db = ReconnectingConnectionPool('MySQLdb',
+#            host = self.cfg.get('output_mysql', 'host'),
+#            db = self.cfg.get('output_mysql', 'database'),
+#            user = self.cfg.get('output_mysql', 'username'),
+#            passwd = self.cfg.get('output_mysql', 'password'),
+#            port = port,
+#            cp_min = 1,
+#            cp_max = 1)
 
     def stop(self):
-        pass
+        print "stop mysql"
 
-    def sqlerror(self, error):
-        log.msg( 'SQL Error:', error.value )
+#    def sqlerror(self, error):
+#        log.err( 'MySQL Error:', error.value )
+#
+#    def simpleQuery(self, sql, args):
+#        """ Just run a deferred sql query, only care about errors """
+#        d = self.db.runQuery(sql, args)
+#        d.addErrback(self.sqlerror)
 
-    def simpleQuery(self, sql, args):
-        """ Just run a deferred sql query, only care about errors """
-        d = self.db.runQuery(sql, args)
-        d.addErrback(self.sqlerror)
+    def write(self, logentry):
+        print "write mysql %s", repr(logentry) 
+        log.err( "write mysql %s", repr(logentry)  )
+        return
 
-    def write(self, entry):
         if (entry["id"] == 'KIPP0001'):
             sid = entry["session"]
             r = yield self.db.runQuery(
@@ -89,65 +97,75 @@ class Output(cowrie.core.output.Output):
                 'INSERT INTO `sessions` (`id`, `starttime`, `sensor`, `ip`)' + \
                 ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
                 (sid, self.nowUnix(), id, peerIP))
-        elif (entry["id"] == 'KIPP-0002'):
-            self.simpleQuery('INSERT INTO `auth` (`session`, `success`' + \
-                ', `username`, `password`, `timestamp`)' + \
-                ' VALUES (%s, %s, %s, %s, FROM_UNIXTIME(%s))',
-                (session, 1, args['username'], args['password'], self.nowUnix()))
-        elif (entry["id"] == 'KIPP-0003'):
-            self.simpleQuery('INSERT INTO `auth` (`session`, `success`' + \
-                ', `username`, `password`, `timestamp`)' + \
-                    ' VALUES (%s, %s, %s, %s, FROM_UNIXTIME(%s))',
-                    (session, 0, args['username'], args['password'], self.nowUnix()))
-        elif (entry["id"] == 'KIPP-0004'):
-            pass
-        elif (entry["id"] == 'KIPP-0005'):
-            self.simpleQuery('INSERT INTO `input`' + \
-                ' (`session`, `timestamp`, `success`, `input`)' + \
-                    ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
-                (session, self.nowUnix(), 1, args['input']))
-        elif (entry["id"] == 'KIPP-0006'):
-            self.simpleQuery('INSERT INTO `input`' + \
-                ' (`session`, `timestamp`, `success`, `input`)' + \
-                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
-                (session, self.nowUnix(), 0, args['input']))
-        elif (entry["id"] == 'KIPP-0009'):
-            r = yield self.db.runQuery(
-                'SELECT `id` FROM `clients` WHERE `version` = %s', \
-                (args['version'],))
-            if r:
-                id = int(r[0][0])
-            else:
-                yield self.db.runQuery(
-                    'INSERT INTO `clients` (`version`) VALUES (%s)', \
-                    (args['version'],))
-                r = yield self.db.runQuery('SELECT LAST_INSERT_ID()')
-                id = int(r[0][0])
-            self.simpleQuery(
-                'UPDATE `sessions` SET `client` = %s WHERE `id` = %s',
-                (id, session))
-        elif (entry["id"] == 'KIPP-0008'):
-            self.simpleQuery('INSERT INTO `input`' + \
-                ' (`session`, `timestamp`, `realm`, `input`)' + \
-                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
-            (session, self.nowUnix(), args['realm'], args['input']))
-        elif (entry["id"] == 'KIPP-0007'):
-            self.simpleQuery('INSERT INTO `downloads`' + \
-                ' (`session`, `timestamp`, `url`, `outfile`, `shasum`)' + \
-                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
-                (session, self.nowUnix(), args['url'], args['outfile'], args['shasum']))
-        elif (entry["id"] == 'KIPP-0010'):
-            self.simpleQuery('UPDATE `sessions` SET `termsize` = %s' + \
-                ' WHERE `id` = %s',
-                ('%sx%s' % (args['width'], args['height']), session))
-        elif (entry["id"] == 'KIPP-0011'):
-            ttylog = self.ttylog(session)
-            if ttylog:
-                self.simpleQuery(
-                'INSERT INTO `ttylog` (`session`, `ttylog`) VALUES (%s, %s)',
-                (session, self.ttylog(session)))
-            self.simpleQuery(
-                'UPDATE `sessions` SET `endtime` = FROM_UNIXTIME(%s)' + \
-                ' WHERE `id` = %s', (self.nowUnix(), session))
+
+#        elif (entry["id"] == 'KIPP-0002'):
+#            self.simpleQuery('INSERT INTO `auth` (`session`, `success`' + \
+#                ', `username`, `password`, `timestamp`)' + \
+#                ' VALUES (%s, %s, %s, %s, FROM_UNIXTIME(%s))',
+#                (session, 1, entry['username'], entry['password'], self.nowUnix()))
+#
+#        elif (entry["id"] == 'KIPP-0003'):
+#            self.simpleQuery('INSERT INTO `auth` (`session`, `success`' + \
+#                ', `username`, `password`, `timestamp`)' + \
+#                    ' VALUES (%s, %s, %s, %s, FROM_UNIXTIME(%s))',
+#                    (session, 0, entry['username'], entry['password'], self.nowUnix()))
+#
+#        elif (entry["id"] == 'KIPP-0004'):
+#            pass
+#
+#        elif (entry["id"] == 'KIPP-0005'):
+#            self.simpleQuery('INSERT INTO `input`' + \
+#                ' (`session`, `timestamp`, `success`, `input`)' + \
+#                    ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
+#                (session, self.nowUnix(), 1, entry['input']))
+#
+#        elif (entry["id"] == 'KIPP-0006'):
+#            self.simpleQuery('INSERT INTO `input`' + \
+#                ' (`session`, `timestamp`, `success`, `input`)' + \
+#                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
+#                (session, self.nowUnix(), 0, entry['input']))
+#
+#        elif (entry["id"] == 'KIPP-0009'):
+#            r = yield self.db.runQuery(
+#                'SELECT `id` FROM `clients` WHERE `version` = %s', \
+#                (entry['version'],))
+#            if r:
+#                id = int(r[0][0])
+#            else:
+#                yield self.db.runQuery(
+#                    'INSERT INTO `clients` (`version`) VALUES (%s)', \
+#                    (entry['version'],))
+#                r = yield self.db.runQuery('SELECT LAST_INSERT_ID()')
+#                id = int(r[0][0])
+#            self.simpleQuery(
+#                'UPDATE `sessions` SET `client` = %s WHERE `id` = %s',
+#                (id, session))
+#
+#        elif (entry["id"] == 'KIPP-0008'):
+#            self.simpleQuery('INSERT INTO `input`' + \
+#                ' (`session`, `timestamp`, `realm`, `input`)' + \
+#                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
+#            (session, self.nowUnix(), entry['realm'], entry['input']))
+#
+#        elif (entry["id"] == 'KIPP-0007'):
+#            self.simpleQuery('INSERT INTO `downloads`' + \
+#                ' (`session`, `timestamp`, `url`, `outfile`, `shasum`)' + \
+#                ' VALUES (%s, FROM_UNIXTIME(%s), %s, %s)',
+#                (session, self.nowUnix(), entry['url'], entry['outfile'], entry['shasum']))
+#
+#        elif (entry["id"] == 'KIPP-0010'):
+#            self.simpleQuery('UPDATE `sessions` SET `termsize` = %s' + \
+#                ' WHERE `id` = %s',
+#                ('%sx%s' % (entry['width'], entry['height']), session))
+#
+#        elif (entry["id"] == 'KIPP-0011'):
+#            ttylog = self.ttylog(session)
+#            if ttylog:
+#                self.simpleQuery(
+#                'INSERT INTO `ttylog` (`session`, `ttylog`) VALUES (%s, %s)',
+#                (session, self.ttylog(session)))
+#            self.simpleQuery(
+#                'UPDATE `sessions` SET `endtime` = FROM_UNIXTIME(%s)' + \
+#                ' WHERE `id` = %s', (self.nowUnix(), session))
 
 # vim: set sw=4 et:

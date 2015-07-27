@@ -49,6 +49,7 @@ class Output(cowrie.core.output.Output):
         self.outfile.close()
 
     def write(self, logentry):
+        print "json write %s" % repr(logentry)
         for i in logentry.keys():
             # remove twisted 15 legacy keys
             if i.startswith('log_'):
