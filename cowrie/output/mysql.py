@@ -39,47 +39,47 @@ class ReconnectingConnectionPool(adbapi.ConnectionPool):
                 self, interaction, *args, **kw)
 
 class Output(cowrie.core.output.Output):
-
     """
     docstring here
     """
 
     def __init__(self, cfg):
+        cowrie.core.output.Output.__init__(self, cfg)
         self.cfg = cfg
         print "init mysql"
         log.msg( "init mysql")
-        cowrie.core.output.Output.__init__(self, cfg)
 
     def start(self):
         print "start mysql"
+        log.msg( "start mysql")
         if self.cfg.has_option('output_mysql', 'port'):
             port = int(self.cfg.get('output_mysql', 'port'))
         else:
             port = 3306
-#        self.db = ReconnectingConnectionPool('MySQLdb',
-#            host = self.cfg.get('output_mysql', 'host'),
-#            db = self.cfg.get('output_mysql', 'database'),
-#            user = self.cfg.get('output_mysql', 'username'),
-#            passwd = self.cfg.get('output_mysql', 'password'),
-#            port = port,
-#            cp_min = 1,
-#            cp_max = 1)
+        self.db = ReconnectingConnectionPool('MySQLdb',
+            host = self.cfg.get('output_mysql', 'host'),
+            db = self.cfg.get('output_mysql', 'database'),
+            user = self.cfg.get('output_mysql', 'username'),
+            passwd = self.cfg.get('output_mysql', 'password'),
+            port = port,
+            cp_min = 1,
+            cp_max = 1)
 
     def stop(self):
+        log.msg( "stop mysql")
         print "stop mysql"
 
-#    def sqlerror(self, error):
-#        log.err( 'MySQL Error:', error.value )
-#
-#    def simpleQuery(self, sql, args):
-#        """ Just run a deferred sql query, only care about errors """
-#        d = self.db.runQuery(sql, args)
-#        d.addErrback(self.sqlerror)
+    def sqlerror(self, error):
+        log.err( 'MySQL Error:', error.value )
+
+    def simpleQuery(self, sql, args):
+        """ Just run a deferred sql query, only care about errors """
+        d = self.db.runQuery(sql, args)
+        d.addErrback(self.sqlerror)
 
     def write(self, logentry):
         print "write mysql %s", repr(logentry) 
         log.err( "write mysql %s", repr(logentry)  )
-        return
 
         if (entry["id"] == 'KIPP0001'):
             sid = entry["session"]
