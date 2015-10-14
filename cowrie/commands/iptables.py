@@ -80,6 +80,7 @@ class command_iptables(HoneyPotCommand):
         parser.add_option("-v", "--verbose", dest="verbose", action="store_true")
         parser.add_option("-x", "--exact", dest="exact", action="store_true")
         parser.add_option("--line-numbers", dest="line_numbers", action="store_true")
+        parser.add_option("-n", "--numeric", dest="numeric", action="store_true")
         parser.add_option("--modprobe", dest="modprobe", action="store")
 
         parser.add_option("-t", "--table", dest="table", action="store", default=command_iptables.DEFAULT_TABLE)
@@ -404,7 +405,7 @@ Try `iptables -h\' or \'iptables --help\' for more information."""
     def bad_argument(self, argument):
         """ Print bad argument and exit """
 
-        self.writeln( """Bad argument \'%s\'' % argument,
+        self.writeln( """Bad argument \'%s\'
 Try `iptables -h\' or \'iptables --help\' for more information."""
             % argument )
         self.exit()

@@ -9,7 +9,7 @@ import pickle
 
 from twisted.python import log
 
-import fs
+from . import fs
 
 class HoneyPotCommand(object):
     def __init__(self, protocol, *args):
@@ -26,24 +26,27 @@ class HoneyPotCommand(object):
         self.exit()
 
     def call(self):
-        self.honeypot.writeln('Hello World! [%s]' % repr(self.args))
+        self.honeypot.writeln('Hello World! [%s]' % (repr(self.args),))
 
     def exit(self):
         self.honeypot.cmdstack.pop()
         self.honeypot.cmdstack[-1].resume()
 
-    def ctrl_c(self):
+    def handle_CTRL_C(self):
         log.msg('Received CTRL-C, exiting..')
         self.writeln('^C')
         self.exit()
 
     def lineReceived(self, line):
-        log.msg('INPUT: %s' % line)
+        log.msg('INPUT: %s' % (line,))
 
     def resume(self):
         pass
 
     def handle_TAB(self):
+        pass
+
+    def handle_CTRL_D(self):
         pass
 
 class HoneyPotShell(object):
@@ -57,7 +60,7 @@ class HoneyPotShell(object):
             }
 
     def lineReceived(self, line):
-        log.msg('CMD: %s' % line)
+        log.msg('CMD: %s' % (line,))
         line = line[:500]
         comment = re.compile('^\s*#')
         for i in [x.strip() for x in re.split(';|&&|\n', line.strip())[:10]]:
@@ -91,6 +94,7 @@ class HoneyPotShell(object):
 
         line = self.cmdpending.pop(0)
         try:
+	    line = line.replace('>', ' > ').replace('|', ' | ').replace('<',' < ')
             cmdAndArgs = shlex.split(line)
         except:
             self.honeypot.writeln(
@@ -134,7 +138,7 @@ class HoneyPotShell(object):
                 input=line, format='Command not found: %(input)s')
             #self.honeypot.logDispatch('Command not found: %s' % (line,))
             if len(line):
-                self.honeypot.writeln('bash: %s: command not found' % cmd)
+                self.honeypot.writeln('bash: %s: command not found' % (cmd,))
                 runOrPrompt()
 
     def resume(self):
@@ -163,7 +167,7 @@ class HoneyPotShell(object):
         elif len(path) > (homelen+1) and \
                 path[:(homelen+1)] == self.honeypot.user.home + '/':
             path = '~' + path[homelen:]
-        # Uncomment the three lines below for a 'better' CenOS look.
+        # Uncomment the three lines below for a 'better' CentOS look.
         # Rather than '[root@svr03 /var/log]#' is shows '[root@svr03 log]#'.
         #path = path.rsplit('/', 1)[-1]
         #if not path:
@@ -172,11 +176,15 @@ class HoneyPotShell(object):
         attrs = {'path': path}
         self.honeypot.terminal.write(prompt % attrs)
 
-    def ctrl_c(self):
+    def handle_CTRL_C(self):
         self.honeypot.lineBuffer = []
         self.honeypot.lineBufferIndex = 0
         self.honeypot.terminal.nextLine()
         self.showPrompt()
+
+    def handle_CTRL_D(self):
+        log.msg('Received CTRL-D, exiting..')
+        self.honeypot.call_command(self.honeypot.commands['exit'])
 
     # Tab completion
     def handle_TAB(self):
@@ -252,15 +260,20 @@ class HoneyPotShell(object):
         self.honeypot.terminal.write(newbuf)
 
 class HoneyPotEnvironment(object):
+    """
+    """
     def __init__(self, cfg):
         self.cfg = cfg
+
         self.commands = {}
+        self.hostname = self.cfg.get('honeypot', 'hostname')
+
         import cowrie.commands
         for c in cowrie.commands.__all__:
-            module = __import__('cowrie.commands.%s' % c,
+            module = __import__('cowrie.commands.%s' % (c,),
                 globals(), locals(), ['commands'])
             self.commands.update(module.commands)
-        self.fs = pickle.load(file(
-            cfg.get('honeypot', 'filesystem_file'), 'rb'))
+
+        self.fs = pickle.load(file(cfg.get('honeypot', 'filesystem_file'), 'rb'))
 
 # vim: set sw=4 et:

@@ -31,7 +31,6 @@ import datetime
 import re
 import copy
 import socket
-import uuid
 
 # KIPP0001 : create session
 # KIPP0002 : succesful login
@@ -46,6 +45,8 @@ import uuid
 # KIPP0011 : Connection Lost
 # KIPP0012 : TTY log closed
 # KIPP0013 : env var requested
+# KIPP0014 : direct-tcpip request
+# KIPP0015 : direct-tcpip data
 
 class Output(object):
     """
@@ -108,8 +109,8 @@ class Output(object):
 
         ev = copy.copy(event)
 
-        if 'isError' in ev:
-            del ev['isError']
+        #if 'isError' in ev:
+        #    del ev['isError']
         ev['sensor'] = self.sensor
 
         # add ISO timestamp and sensor data
@@ -137,16 +138,16 @@ class Output(object):
             if not match:
                 return
             sessionno = int(match.groups()[0])
-            del ev['system']
+            #del ev['system']
 
         if sessionno in self.ips:
             ev['src_ip'] = self.ips[sessionno]
 
         # connection event is special. adds to session list
         if ev['eventid'] == 'KIPP0001':
-            self.sessions[sessionno] = uuid.uuid4().hex
+            self.sessions[sessionno] = ev['id']
             self.ips[sessionno] = ev['src_ip']
-            del ev['system']
+            del ev['id']
 
         ev['session'] = self.sessions[sessionno]
 

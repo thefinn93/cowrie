@@ -11,18 +11,115 @@ from cowrie.core.fs import *
 commands = {}
 
 class command_cat(HoneyPotCommand):
-    def call(self):
-        for arg in self.args:
-            path = self.fs.resolve_path(arg, self.honeypot.cwd)
-            if self.fs.is_dir(path):
-                self.writeln('cat: %s: Is a directory' % (arg,))
-                continue
-            try:
-                self.write(self.fs.file_contents(path))
-            except:
-                self.writeln('cat: %s: No such file or directory' % (arg,))
+    def start(self):
+        if not self.args or self.args[0] == '>':
+            pass
+        else:
+            for arg in self.args:
+                path = self.fs.resolve_path(arg, self.honeypot.cwd)
+                if self.fs.isdir(path):
+                    self.writeln('cat: %s: Is a directory' % (arg,))
+                    continue
+                try:
+                    self.write(self.fs.file_contents(path))
+                except:
+                    self.writeln('cat: %s: No such file or directory' % (arg,))
+            self.exit()
 
+    def lineReceived(self, line):
+        log.msg( eventid='KIPP0008', realm='cat', input=line,
+            format='INPUT (%(realm)s): %(input)s' )
+
+    def handle_CTRL_D(self):
+        self.exit()
 commands['/bin/cat'] = command_cat
+
+class command_tail(HoneyPotCommand):
+    def start(self):
+        self.n = 10
+        if not self.args or self.args[0] == '>':
+            pass
+        else:
+            try:
+                optlist, args = getopt.getopt(self.args, 'n:')
+            except getopt.GetoptError as err:
+                self.writeln("tail: invalid option -- '%s'" % (arg,))
+                self.exit()
+                return
+
+            for opt in optlist:
+                if opt[0] == '-n':
+                    self.n = int(opt[1])
+
+            for arg in args:
+                path = self.fs.resolve_path(arg, self.honeypot.cwd)
+                if self.fs.isdir(path):
+                    self.writeln("tail: error reading `%s': Is a directory" % (arg,))
+                    continue
+                try:
+                    file = self.fs.file_contents(path).split('\n')
+                    lines = int(len(file))
+                    if lines < self.n:
+                        self.n = lines - 1
+                    i = 0
+                    for j in range((lines - self.n - 1), lines):
+                        if i < self.n:
+                            self.writeln(file[j])
+                        i += 1
+                except:
+                    self.writeln("tail: cannot open `%s' for reading: No such file or directory" % (arg,))
+            self.exit()
+
+    def lineReceived(self, line):
+        log.msg( eventid='KIPP0008', realm='tail', input=line,
+            format='INPUT (%(realm)s): %(input)s' )
+
+    def handle_CTRL_D(self):
+        self.exit()
+commands['/bin/tail'] = command_tail
+
+
+class command_head(HoneyPotCommand):
+    def start(self):
+        self.n = 10
+        if not self.args or self.args[0] == '>':
+            pass
+        else:
+            try:
+                optlist, args = getopt.getopt(self.args, 'n:')
+            except getopt.GetoptError as err:
+                self.writeln("head: invalid option -- '%s'" % (arg,))
+                self.exit()
+                return
+
+            for opt in optlist:
+                if opt[0] == '-n':
+                    self.n = int(opt[1])
+
+            for arg in args:
+                path = self.fs.resolve_path(arg, self.honeypot.cwd)
+                if self.fs.isdir(path):
+                    self.writeln("head: error reading `%s': Is a directory" % (arg,))
+                    continue
+                try:
+                    file = self.fs.file_contents(path).split('\n')
+                    i = 0
+                    for line in file:
+                        if i < self.n:
+                            self.writeln(line)
+                        i += 1
+                except:
+                    self.writeln("head: cannot open `%s' for reading: No such file or directory" % (arg,))
+            self.exit()
+
+    def lineReceived(self, line):
+        log.msg( eventid='KIPP0008', realm='head', input=line,
+            format='INPUT (%(realm)s): %(input)s' )
+
+    def handle_CTRL_D(self):
+        self.exit()
+commands['/bin/head'] = command_head
+
 
 class command_cd(HoneyPotCommand):
     def call(self):
@@ -32,16 +129,16 @@ class command_cd(HoneyPotCommand):
             path = self.args[0]
         try:
             newpath = self.fs.resolve_path(path, self.honeypot.cwd)
-            newdir = self.fs.get_path(newpath)
+            inode = self.fs.getfile(newpath)
         except:
             newdir = None
         if path == "-":
             self.writeln('bash: cd: OLDPWD not set')
             return
-        if newdir is None:
+        if inode is None or inode is False:
             self.writeln('bash: cd: %s: No such file or directory' % path)
             return
-        if not self.fs.is_dir(newpath):
+        if inode[A_TYPE] != T_DIR:
             self.writeln('bash: cd: %s: Not a directory' % path)
             return
         self.honeypot.cwd = newpath
@@ -99,7 +196,7 @@ class command_cp(HoneyPotCommand):
             self.writeln("Try `cp --help' for more information.")
             return
         sources, dest = args[:-1], args[-1]
-        if len(sources) > 1 and not self.fs.is_dir(resolv(dest)):
+        if len(sources) > 1 and not self.fs.isdir(resolv(dest)):
             self.writeln("cp: target `%s' is not a directory" % (dest,))
             return
 
@@ -110,10 +207,10 @@ class command_cp(HoneyPotCommand):
                 (dest,))
             return
 
-        if self.fs.is_dir(resolv(dest)):
-            is_dir = True
+        if self.fs.isdir(resolv(dest)):
+            isdir = True
         else:
-            is_dir = False
+            isdir = False
             parent = os.path.dirname(resolv(dest))
             if not self.fs.exists(parent):
                 self.writeln("cp: cannot create regular file " + \
@@ -125,11 +222,11 @@ class command_cp(HoneyPotCommand):
                 self.writeln(
                     "cp: cannot stat `%s': No such file or directory" % (src,))
                 continue
-            if not recursive and self.fs.is_dir(resolv(src)):
+            if not recursive and self.fs.isdir(resolv(src)):
                 self.writeln("cp: omitting directory `%s'" % (src,))
                 continue
             s = copy.deepcopy(self.fs.getfile(resolv(src)))
-            if is_dir:
+            if isdir:
                 dir = self.fs.get_path(resolv(dest))
                 outfile = os.path.basename(src)
             else:
@@ -163,7 +260,7 @@ class command_mv(HoneyPotCommand):
             self.writeln("Try `mv --help' for more information.")
             return
         sources, dest = args[:-1], args[-1]
-        if len(sources) > 1 and not self.fs.is_dir(resolv(dest)):
+        if len(sources) > 1 and not self.fs.isdir(resolv(dest)):
             self.writeln("mv: target `%s' is not a directory" % (dest,))
             return
 
@@ -174,10 +271,10 @@ class command_mv(HoneyPotCommand):
                 (dest,))
             return
 
-        if self.fs.is_dir(resolv(dest)):
-            is_dir = True
+        if self.fs.isdir(resolv(dest)):
+            isdir = True
         else:
-            is_dir = False
+            isdir = False
             parent = os.path.dirname(resolv(dest))
             if not self.fs.exists(parent):
                 self.writeln("mv: cannot create regular file " + \
@@ -192,7 +289,7 @@ class command_mv(HoneyPotCommand):
                     (src,))
                 continue
             s = self.fs.getfile(resolv(src))
-            if is_dir:
+            if isdir:
                 dir = self.fs.get_path(resolv(dest))
                 outfile = os.path.basename(src)
             else:
@@ -215,34 +312,40 @@ class command_mkdir(HoneyPotCommand):
                 self.writeln(
                     'mkdir: cannot create directory `%s\': File exists' % f)
                 return
-            ok = self.fs.mkdir(path, 0, 0, 4096, 16877)
-            if not ok:
+            try:
+                self.fs.mkdir(path, 0, 0, 4096, 16877)
+            except (FileNotFound) as err:
                 self.writeln(
                     'mkdir: cannot create directory `%s\': ' % f + \
                     'No such file or directory')
-                return
+            return
 commands['/bin/mkdir'] = command_mkdir
 
 class command_rmdir(HoneyPotCommand):
     def call(self):
         for f in self.args:
             path = self.fs.resolve_path(f, self.honeypot.cwd)
-            if len(self.fs.get_path(path)):
-                self.writeln(
-                    'rmdir: failed to remove `%s\': Directory not empty' % f)
-                continue
             try:
+                if len(self.fs.get_path(path)):
+                    self.writeln(
+                        'rmdir: failed to remove `%s\': Directory not empty' % f)
+                    continue
                 dir = self.fs.get_path('/'.join(path.split('/')[:-1]))
-            except IndexError:
+            except (IndexError, FileNotFound):
                 dir = None
-            if not dir or f not in [x[A_NAME] for x in dir]:
+            fname = os.path.basename(f)
+            if not dir or fname not in [x[A_NAME] for x in dir]:
                 self.writeln(
                     'rmdir: failed to remove `%s\': ' % f + \
                     'No such file or directory')
                 continue
             for i in dir[:]:
-                if i[A_NAME] == f:
+                if i[A_NAME] == fname:
+                    if i[A_TYPE] != T_DIR:
+                        self.writeln("rmdir: failed to remove '%s': Not a directory" % f)
+                        return
                     dir.remove(i)
+                    break
 commands['/bin/rmdir'] = command_rmdir
 
 class command_pwd(HoneyPotCommand):

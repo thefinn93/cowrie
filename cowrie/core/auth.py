@@ -7,17 +7,9 @@ from os import path
 from sys import modules
 from random import randint
 
-from zope.interface import implementer
+from zope.interface import implements
 
-from twisted.cred.checkers import ICredentialsChecker
-from twisted.cred.credentials import IUsernamePassword, ISSHPrivateKey, \
-    IPluggableAuthenticationModules
-from twisted.cred.error import UnauthorizedLogin, UnhandledCredentials
-
-from twisted.internet import defer
-from twisted.python import log, failure
-from twisted.conch import error
-from twisted.conch.ssh import keys
+from twisted.python import log
 
 # by Walter de Jong <walter@sara.nl>
 class UserDB(object):
@@ -124,15 +116,19 @@ class AuthRandom(object):
     Users will be authenticated after a random number of attempts.
     """
 
-    def __init__(self, cfg, parameters):
+    def __init__(self, cfg):
         # Default values
         self.mintry, self.maxtry, self.maxcache = 2, 5, 10
-        parlist = parameters.split(',')
 
-        if len(parlist) == 3:
-            self.mintry = int(parlist[0])
-            self.maxtry = int(parlist[1])
-            self.maxcache = int(parlist[2])
+        # Are there auth_class parameters?
+        if cfg.has_option('honeypot', 'auth_class_parameters'):
+            parameters = cfg.get('honeypot', 'auth_class_parameters')
+            parlist = parameters.split(',')
+            if len(parlist) == 3:
+                self.mintry = int(parlist[0])
+                self.maxtry = int(parlist[1])
+                self.maxcache = int(parlist[2])
+
         if self.maxtry < self.mintry:
             self.maxtry = self.mintry + 1
             log.msg('maxtry < mintry, adjusting maxtry to: %d' % self.maxtry)
@@ -234,109 +230,5 @@ class AuthRandom(object):
                     auth = True
         self.savevars()
         return auth
-
-@implementer(ICredentialsChecker)
-class HoneypotPublicKeyChecker:
-    """
-    Checker that accepts, logs and denies public key authentication attempts
-    """
-
-    credentialInterfaces = (ISSHPrivateKey,)
-
-    def __init__(self, cfg):
-        pass
-
-    def requestAvatarId(self, credentials):
-        _pubKey = keys.Key.fromString(credentials.blob)
-        log.msg(format='public key attempt for user %(username)s with fingerprint %(fingerprint)s',
-                username=credentials.username,
-                fingerprint=_pubKey.fingerprint())
-        return failure.Failure(error.ConchError('Incorrect signature'))
-
-# This credential interface also provides an IP address
-@implementer(IUsernamePassword)
-class UsernamePasswordIP:
-
-    def __init__(self, username, password, ip):
-        self.username = username
-        self.password = password
-        self.ip = ip
-
-# This credential interface also provides an IP address
-@implementer(IPluggableAuthenticationModules)
-class PluggableAuthenticationModulesIP:
-
-    def __init__(self, username, pamConversion, ip):
-        self.username = username
-        self.pamConversion = pamConversion
-        self.ip = ip
-
-@implementer(ICredentialsChecker)
-class HoneypotPasswordChecker:
-    """
-    Checker that accepts "keyboard-interactive" and "password"
-    """
-
-    credentialInterfaces = (IUsernamePassword, IPluggableAuthenticationModules)
-
-    def __init__(self, cfg):
-        self.cfg = cfg
-
-    def requestAvatarId(self, credentials):
-        if hasattr(credentials, 'password'):
-            if self.checkUserPass(credentials.username, credentials.password,
-                                  credentials.ip):
-                return defer.succeed(credentials.username)
-            else:
-                return defer.fail(UnauthorizedLogin())
-        elif hasattr(credentials, 'pamConversion'):
-            return self.checkPamUser(credentials.username,
-                                     credentials.pamConversion, credentials.ip)
-        return defer.fail(UnhandledCredentials())
-
-    def checkPamUser(self, username, pamConversion, ip):
-        r = pamConversion((('Password:', 1),))
-        return r.addCallback(self.cbCheckPamUser, username, ip)
-
-    def cbCheckPamUser(self, responses, username, ip):
-        for (response, zero) in responses:
-            if self.checkUserPass(username, response, ip):
-                return defer.succeed(username)
-        return defer.fail(UnauthorizedLogin())
-
-    def checkUserPass(self, theusername, thepassword, ip):
-        #  UserDB is the default auth_class
-        authname = UserDB
-        parameters = self.cfg
-
-        # Is the auth_class defined in the config file?
-        if self.cfg.has_option('honeypot', 'auth_class'):
-            authclass = self.cfg.get('honeypot', 'auth_class')
-
-            # Check if authclass exists in this module
-            if hasattr(modules[__name__], authclass):
-                authname = getattr(modules[__name__], authclass)
-
-                # Are there auth_class parameters?
-                if self.cfg.has_option('honeypot', 'auth_class_parameters'):
-                    parameters = self.cfg.get('honeypot', 'auth_class_parameters')
-            else:
-                log.msg('auth_class: %s not found in %s' % (authclass, __name__))
-
-        if parameters:
-            theauth = authname(parameters)
-        else:
-            theauth = authname()
-
-        if theauth.checklogin(theusername, thepassword, ip):
-            log.msg(eventid='KIPP0002',
-                format='login attempt [%(username)s/%(password)s] succeeded',
-                username=theusername, password=thepassword)
-            return True
-        else:
-            log.msg(eventid='KIPP0003',
-                format='login attempt [%(username)s/%(password)s] failed',
-                username=theusername, password=thepassword)
-            return False
 
 # vim: set sw=4 et:

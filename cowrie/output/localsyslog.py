@@ -26,10 +26,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
-import json
-import os
-
-import twisted.python.logfile
+import syslog
+import twisted.python.syslog
 
 import cowrie.core.output
 
@@ -37,24 +35,21 @@ class Output(cowrie.core.output.Output):
 
     def __init__(self, cfg):
         cowrie.core.output.Output.__init__(self, cfg)
-        fn = cfg.get('output_jsonlog', 'logfile')
-        dirs = os.path.dirname(fn)
-        base = os.path.basename(fn)
-        self.outfile = twisted.python.logfile.DailyLogFile(base, dirs)
+        facility_string = cfg.get('output_localsyslog', 'facility')
+        self.facility = vars(syslog)['LOG_' + facility_string]
+        self.syslog = twisted.python.syslog.SyslogObserver(prefix='cowrie', facility=self.facility)
 
     def start(self):
         pass
 
     def stop(self):
-        self.outfile.close()
+        pass
 
     def write(self, logentry):
-        for i in logentry.keys():
+        #for i in logentry.keys():
             # remove twisted 15 legacy keys
-            if i.startswith('log_'):
-                del logentry[i]
-        json.dump(logentry, self.outfile)
-        self.outfile.write('\n')
-        self.outfile.flush()
+            #if i.startswith('log_'):
+            #    del logentry[i]
+        self.syslog.emit(logentry)
 
 # vim: set sw=4 et:

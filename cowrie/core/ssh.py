@@ -4,12 +4,13 @@
 import os
 import copy
 import time
+import struct
 import uuid
+import ConfigParser
 
-from zope.interface import implementer
+from zope.interface import implements
 
 import twisted
-from twisted.cred import portal
 from twisted.conch import avatar, interfaces as conchinterfaces
 from twisted.conch.ssh import factory, userauth, keys, session, transport, filetransfer, forwarding
 from twisted.conch.ssh.filetransfer import FXF_READ, FXF_WRITE, FXF_APPEND, FXF_CREAT, FXF_TRUNC, FXF_EXCL
@@ -17,22 +18,24 @@ import twisted.conch.ls
 from twisted.python import log, components
 from twisted.conch.openssh_compat import primes
 from twisted.conch.ssh.common import NS, getNS
+from twisted.internet import defer
 
-import ConfigParser
-
-import fs
-import sshserver
-import auth
-import connection
-import honeypot
-import protocol
-import sshserver
-import exceptions
+from . import credentials
+from . import fs
+from . import auth
+from . import connection
+from . import honeypot
+from . import protocol
 
 class HoneyPotSSHUserAuthServer(userauth.SSHUserAuthServer):
+
     def serviceStarted(self):
+        self.interfaceToMethod[credentials.IUsername] = 'none'
+        self.interfaceToMethod[credentials.IUsernamePasswordIP] = 'password'
+        self.interfaceToMethod[credentials.IPluggableAuthenticationModulesIP] = 'keyboard-interactive'
         userauth.SSHUserAuthServer.serviceStarted(self)
         self.bannerSent = False
+        self._pamDeferred = None
 
     def sendBanner(self):
         if self.bannerSent:
@@ -54,24 +57,93 @@ class HoneyPotSSHUserAuthServer(userauth.SSHUserAuthServer):
         self.sendBanner()
         return userauth.SSHUserAuthServer.ssh_USERAUTH_REQUEST(self, packet)
 
-    # Overridden to pass src_ip to auth.UsernamePasswordIP
+    def auth_none(self, packet):
+        c = credentials.Username(self.user)
+        return self.portal.login(c, None, conchinterfaces.IConchUser)
+
+    # Overridden to pass src_ip to credentials.UsernamePasswordIP
     def auth_password(self, packet):
         password = getNS(packet[1:])[0]
         src_ip = self.transport.transport.getPeer().host
-        c = auth.UsernamePasswordIP(self.user, password, src_ip)
-        return self.portal.login(c, None, conchinterfaces.IConchUser).addErrback(
-                                                        self._ebPassword)
+        c = credentials.UsernamePasswordIP(self.user, password, src_ip)
+        return self.portal.login(c, None,
+            conchinterfaces.IConchUser).addErrback(self._ebPassword)
 
-    # Overridden to pass src_ip to auth.PluggableAuthenticationModulesIP
     def auth_keyboard_interactive(self, packet):
+        """
+        Keyboard interactive authentication.  No payload.  We create a
+        PluggableAuthenticationModules credential and authenticate with our
+        portal.
+
+        Overridden to pass src_ip to credentials.PluggableAuthenticationModulesIP
+        """
         if self._pamDeferred is not None:
             self.transport.sendDisconnect(
                     transport.DISCONNECT_PROTOCOL_ERROR,
                     "only one keyboard interactive attempt at a time")
             return defer.fail(error.IgnoreAuthentication())
         src_ip = self.transport.transport.getPeer().host
-        c = auth.PluggableAuthenticationModulesIP(self.user, self._pamConv, src_ip)
-        return self.portal.login(c, None, conchinterfaces.IConchUser)
+        c = credentials.PluggableAuthenticationModulesIP(self.user, self._pamConv, src_ip)
+        return self.portal.login(c, None,
+            conchinterfaces.IConchUser).addErrback(self._ebPassword)
+
+    def _pamConv(self, items):
+         """
+         Convert a list of PAM authentication questions into a
+         MSG_USERAUTH_INFO_REQUEST.  Returns a Deferred that will be called
+         back when the user has responses to the questions.
+    
+         @param items: a list of 2-tuples (message, kind).  We only care about
+             kinds 1 (password) and 2 (text).
+         @type items: C{list}
+         @rtype: L{defer.Deferred}
+         """
+         resp = []
+         for message, kind in items:
+             if kind == 1: # password
+                 resp.append((message, 0))
+             elif kind == 2: # text
+                 resp.append((message, 1))
+             elif kind in (3, 4):
+                 return defer.fail(error.ConchError(
+                     'cannot handle PAM 3 or 4 messages'))
+             else:
+                 return defer.fail(error.ConchError(
+                     'bad PAM auth kind %i' % kind))
+         packet = NS('') + NS('') + NS('')
+         packet += struct.pack('>L', len(resp))
+         for prompt, echo in resp:
+             packet += NS(prompt)
+             packet += chr(echo)
+         self.transport.sendPacket(userauth.MSG_USERAUTH_INFO_REQUEST, packet)
+         self._pamDeferred = defer.Deferred()
+         return self._pamDeferred
+
+    def ssh_USERAUTH_INFO_RESPONSE(self, packet):
+        """
+        The user has responded with answers to PAMs authentication questions.
+        Parse the packet into a PAM response and callback self._pamDeferred.
+        Payload::
+            uint32 numer of responses
+            string response 1
+            ...
+            string response n
+        """
+        d, self._pamDeferred = self._pamDeferred, None
+    
+        try:
+            resp = []
+            numResps = struct.unpack('>L', packet[:4])[0]
+            packet = packet[4:]
+            while len(resp) < numResps:
+                response, packet = getNS(packet)
+                resp.append((response, 0))
+            if packet:
+                raise error.ConchError("%i bytes of extra data" % len(packet))
+        except:
+            d.errback(failure.Failure())
+        else:
+            d.callback(resp)
 
 # As implemented by Kojoney
 class HoneyPotSSHFactory(factory.SSHFactory):
@@ -88,8 +160,9 @@ class HoneyPotSSHFactory(factory.SSHFactory):
             output.logDispatch(*msg, **args)
 
     def __init__(self, cfg):
-
         self.cfg = cfg
+
+    def startFactory(self):
 
         # protocol^Wwhatever instances are kept here for the interact feature
         self.sessions = {}
@@ -107,47 +180,36 @@ class HoneyPotSSHFactory(factory.SSHFactory):
 
         # load db loggers
         self.dbloggers = []
-        for x in cfg.sections():
+        for x in self.cfg.sections():
             if not x.startswith('database_'):
                 continue
             engine = x.split('_')[1]
-            dbengine = 'database_' + engine
-            lcfg = ConfigParser.SafeConfigParser()
-            lcfg.add_section(dbengine)
-            for i in cfg.options(x):
-                lcfg.set(dbengine, i, cfg.get(x, i))
-            lcfg.add_section('honeypot')
-            for i in cfg.options('honeypot'):
-                lcfg.set('honeypot', i, cfg.get('honeypot', i))
             log.msg('Loading dblog engine: %s' % (engine,))
             dblogger = __import__(
                 'cowrie.dblog.%s' % (engine,),
-                globals(), locals(), ['dblog']).DBLogger(lcfg)
+                globals(), locals(), ['dblog']).DBLogger(self.cfg)
             log.addObserver(dblogger.emit)
             self.dbloggers.append(dblogger)
             print "Loaded dblog plugin %s" % engine 
 
-        # load new output modules
-        self.output_plugins = [];
-        for x in cfg.sections():
+        # load output modules
+        self.output_plugins = []
+        for x in self.cfg.sections():
             if not x.startswith('output_'):
                 continue
             engine = x.split('_')[1]
-            output = 'output_' + engine
-            lcfg = ConfigParser.SafeConfigParser()
-            lcfg.add_section(output)
-            for i in cfg.options(x):
-                lcfg.set(output, i, cfg.get(x, i))
-            lcfg.add_section('honeypot')
-            for i in cfg.options('honeypot'):
-                lcfg.set('honeypot', i, cfg.get('honeypot', i))
             log.msg('Loading output engine: %s' % (engine,))
             output = __import__(
                 'cowrie.output.%s' % (engine,)
-                ,globals(), locals(), ['output']).Output(lcfg)
+                ,globals(), locals(), ['output']).Output(self.cfg)
             log.addObserver(output.emit)
             self.output_plugins.append(output)
             print "Loaded output plugin %s" % engine 
+
+        factory.SSHFactory.startFactory(self)
+
+    def stopFactory(self):
+        factory.SSHFactory.stopFactory(self)
 
     def buildProtocol(self, addr):
         """
@@ -193,9 +255,9 @@ class HoneyPotSSHFactory(factory.SSHFactory):
         t.factory = self
         return t
 
-@implementer(portal.IRealm)
 class HoneyPotRealm:
-
+    implements(twisted.cred.portal.IRealm)
+    
     def __init__(self, cfg):
         self.cfg = cfg
         self.env = honeypot.HoneyPotEnvironment(cfg)
@@ -207,11 +269,15 @@ class HoneyPotRealm:
         else:
             raise Exception("No supported interfaces found.")
 
-class HoneyPotTransport(sshserver.CowrieSSHServerTransport):
+class HoneyPotTransport(transport.SSHServerTransport):
     """
     """
 
     def connectionMade(self):
+        """
+        Called when the connection is made from the other side.
+        We send our version, but wait with sending KEXINIT
+        """
         self.transportId = uuid.uuid4().hex[:8]
         self.interactors = []
 
@@ -219,18 +285,51 @@ class HoneyPotTransport(sshserver.CowrieSSHServerTransport):
            format='New connection: %(src_ip)s:%(src_port)s (%(dst_ip)s:%(dst_port)s) [session: %(sessionno)s]',
            src_ip=self.transport.getPeer().host, src_port=self.transport.getPeer().port,
            dst_ip=self.transport.getHost().host, dst_port=self.transport.getHost().port,
-           sessionno=self.transport.sessionno)
+           id=self.transportId, sessionno=self.transport.sessionno)
 
-        sshserver.CowrieSSHServerTransport.connectionMade(self)
+        self.transport.write('%s\r\n' % (self.ourVersionString,))
+        self.currentEncryptions = transport.SSHCiphers('none', 'none', 'none', 'none')
+        self.currentEncryptions.setKeys('', '', '', '', '', '')
 
     def sendKexInit(self):
         # Don't send key exchange prematurely
         if not self.gotVersion:
             return
-        sshserver.CowrieSSHServerTransport.sendKexInit(self)
+        transport.SSHServerTransport.sendKexInit(self)
 
     def dataReceived(self, data):
-        sshserver.CowrieSSHServerTransport.dataReceived(self, data)
+        """
+        First, check for the version string (SSH-2.0-*).  After that has been
+        received, this method adds data to the buffer, and pulls out any
+        packets.
+
+        @type data: C{str}
+        """
+        self.buf = self.buf + data
+        if not self.gotVersion:
+            if not '\n' in self.buf:
+                return
+            self.otherVersionString = self.buf.split('\n')[0].strip()
+            if self.buf.startswith('SSH-'):
+                self.gotVersion = True
+                remoteVersion = self.buf.split('-')[1]
+                if remoteVersion not in self.supportedVersions:
+                    self._unsupportedVersionReceived(remoteVersion)
+                    return
+                i = self.buf.index('\n')
+                self.buf = self.buf[i+1:]
+                self.sendKexInit()
+            else:
+                self.transport.write('Protocol mismatch.\n')
+                log.msg('Bad protocol version identification: %s' % (self.otherVersionString))
+                self.transport.loseConnection()
+                return
+        packet = self.getPacket()
+        while packet:
+            messageNum = ord(packet[0])
+            self.dispatchMessage(messageNum, packet[1:])
+            packet = self.getPacket()
+
         # later versions seem to call sendKexInit again on their own
         if twisted.version.major < 11 and \
                 not self._hadVersion and self.gotVersion:
@@ -252,7 +351,7 @@ class HoneyPotTransport(sshserver.CowrieSSHServerTransport):
             kexAlgs=kexAlgs, keyAlgs=keyAlgs, encCS=encCS, macCS=macCS,
             compCS=compCS, format='Remote SSH version: %(version)s')
 
-        return sshserver.CowrieSSHServerTransport.ssh_KEXINIT(self, packet)
+        return transport.SSHServerTransport.ssh_KEXINIT(self, packet)
 
     # this seems to be the only reliable place of catching lost connection
     def connectionLost(self, reason):
@@ -260,8 +359,27 @@ class HoneyPotTransport(sshserver.CowrieSSHServerTransport):
             i.sessionClosed()
         if self.transport.sessionno in self.factory.sessions:
             del self.factory.sessions[self.transport.sessionno]
-        sshserver.CowrieSSHServerTransport.connectionLost(self, reason)
+        transport.SSHServerTransport.connectionLost(self, reason)
         log.msg(eventid='KIPP0011', format='Connection lost')
+
+    def sendDisconnect(self, reason, desc):
+        """
+        http://kbyte.snowpenguin.org/portal/2013/04/30/kippo-protocol-mismatch-workaround/
+        Workaround for the "bad packet length" error message.
+
+        @param reason: the reason for the disconnect.  Should be one of the
+                       DISCONNECT_* values.
+        @type reason: C{int}
+        @param desc: a descrption of the reason for the disconnection.
+        @type desc: C{str}
+        """
+        if not 'bad packet length' in desc:
+            transport.SSHServerTransport.sendDisconnect(self, reason, desc)
+        else:
+            self.transport.write('Packet corrupt\n')
+            log.msg('[SERVER] - Disconnecting with error, code %s\nreason: %s' % (reason, desc))
+            self.transport.loseConnection()
+
 
 class HoneyPotSSHSession(session.SSHSession):
 
@@ -308,16 +426,16 @@ class HoneyPotSSHSession(session.SSHSession):
     def channelClosed(self):
         log.msg("Called channelClosed in SSHSession")
 
-# FIXME: recent twisted conch avatar.py uses IConchuser here
-@implementer(conchinterfaces.ISession)
 class HoneyPotAvatar(avatar.ConchUser):
+    # FIXME: recent twisted conch avatar.py uses IConchuser here
+    implements(conchinterfaces.ISession)
 
     def __init__(self, username, env):
         avatar.ConchUser.__init__(self)
         self.username = username
         self.env = env
         self.fs = fs.HoneyPotFilesystem(copy.deepcopy(self.env.fs),self.env.cfg)
-        self.hostname = self.env.cfg.get('honeypot', 'hostname')
+        self.hostname = self.env.hostname
         self.protocol = None
 
         self.channelLookup.update({'session': HoneyPotSSHSession})
@@ -415,8 +533,8 @@ def getDSAKeys(cfg):
             privateKeyString = f.read()
     return publicKeyString, privateKeyString
 
-@implementer(conchinterfaces.ISFTPFile)
 class CowrieSFTPFile:
+    implements(conchinterfaces.ISFTPFile)
 
     def __init__(self, server, filename, flags, attrs):
         self.server = server
@@ -496,8 +614,8 @@ class CowrieSFTPDirectory:
     def close(self):
         self.files = []
 
-@implementer(conchinterfaces.ISFTPServer)
 class CowrieSFTPServer:
+    implements(conchinterfaces.ISFTPServer)
 
     def __init__(self, avatar):
         self.avatar = avatar
@@ -591,19 +709,20 @@ components.registerAdapter(CowrieSFTPServer, HoneyPotAvatar, conchinterfaces.ISF
 
 def CowrieOpenConnectForwardingClient(remoteWindow, remoteMaxPacket, data, avatar):
     remoteHP, origHP = twisted.conch.ssh.forwarding.unpackOpen_direct_tcpip(data)
-    log.msg("direct-tcp connection attempt to %s:%i" % remoteHP)
+    log.msg(eventid='KIPP0014', format='direct-tcp connection request to %(dst_ip)s:%(dst_port)s',
+            dst_ip=remoteHP[0], dst_port=remoteHP[1])
     return CowrieConnectForwardingChannel(remoteHP,
-       remoteWindow=remoteWindow,
-       remoteMaxPacket=remoteMaxPacket,
+       remoteWindow=remoteWindow, remoteMaxPacket=remoteMaxPacket,
        avatar=avatar)
 
 class CowrieConnectForwardingChannel(forwarding.SSHConnectForwardingChannel):
 
     def channelOpen(self, specificData):
-        log.msg("Faking channel open %s:%i" % self.hostport)
+        pass
 
     def dataReceived(self, data):
-        log.msg("received data %s" % repr(data))
-
+        log.msg(eventid='KIPP0015', format='direct-tcp forward to %(dst_ip)s:%(dst_port)s with data %(data)s',
+            dst_ip=self.hostport[0], dst_port=self.hostport[1], data=repr(data))
+        self._close("Connection refused")
 
 # vim: set et sw=4 et:

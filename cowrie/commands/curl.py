@@ -12,8 +12,10 @@ import getopt
 import hashlib
 
 from twisted.web import client
-from twisted.internet import reactor
+from twisted.internet import reactor, ssl
 from twisted.python import log
+
+from OpenSSL import SSL
 
 from cowrie.core.honeypot import HoneyPotCommand
 from cowrie.core.fs import *
@@ -82,7 +84,7 @@ class command_curl(HoneyPotCommand):
             path = os.path.dirname(outfile)
             if not path or \
                     not self.fs.exists(path) or \
-                    not self.fs.is_dir(path):
+                    not self.fs.isdir(path):
                 self.writeln('curl: %s: Cannot open: No such file or directory' % \
                     outfile)
                 self.exit()
@@ -112,11 +114,7 @@ class command_curl(HoneyPotCommand):
             host = parsed.hostname
             port = parsed.port or (443 if scheme == 'https' else 80)
             path = parsed.path or '/'
-            if scheme == 'https':
-                self.writeln('Sorry, SSL not supported in this release')
-                self.exit()
-                return None
-            elif scheme != 'http':
+            if scheme != 'http' and scheme != 'https':
                 raise exceptions.NotImplementedError
         except:
             self.writeln('%s: Unsupported scheme.' % (url,))
@@ -132,11 +130,18 @@ class command_curl(HoneyPotCommand):
         out_addr = None
         if self.honeypot.env.cfg.has_option('honeypot', 'out_addr'):
             out_addr = (self.honeypot.env.cfg.get('honeypot', 'out_addr'), 0)
-        self.connection = reactor.connectTCP(
-            host, port, factory, bindAddress=out_addr)
+
+        if scheme == 'https':
+            contextFactory = ssl.ClientContextFactory()
+            contextFactory.method = SSL.SSLv23_METHOD
+            reactor.connectSSL(host, port, factory, contextFactory)
+        else: #can only be http
+            self.connection = reactor.connectTCP(
+                host, port, factory, bindAddress=out_addr)
+
         return factory.deferred
 
-    def ctrl_c(self):
+    def handle_CTRL_C(self):
         self.writeln('^C')
         self.connection.transport.loseConnection()
 
@@ -204,11 +209,11 @@ class HTTPProgressDownloader(client.HTTPDownloader):
     def gotHeaders(self, headers):
         if self.status == '200':
             #self.curl.writeln('200 OK')
-            if headers.has_key('content-length'):
+            if 'content-length' in headers:
                 self.totallength = int(headers['content-length'][0])
             else:
                 self.totallength = 0
-            if headers.has_key('content-type'):
+            if 'content-type' in headers:
                 self.contenttype = headers['content-type'][0]
             else:
                 self.contenttype = 'text/whatever'

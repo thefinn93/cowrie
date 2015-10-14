@@ -15,6 +15,7 @@ from twisted.python.logfile import DailyLogFile
 from cowrie.core.config import readConfigFile
 from cowrie import core
 import cowrie.core.ssh
+import cowrie.core.checkers
 
 class Options(usage.Options):
     optParameters = [
@@ -37,7 +38,7 @@ class CowrieServiceMaker(object):
 #        startLogging(sys.stdout)
 
         if os.name == 'posix' and os.getuid() == 0:
-            print 'ERROR: You must not run cowrie as root!'
+            print('ERROR: You must not run cowrie as root!')
             sys.exit(1)
 
         cfg = readConfigFile(options["config"])
@@ -57,8 +58,13 @@ class CowrieServiceMaker(object):
 
         factory = core.ssh.HoneyPotSSHFactory(cfg)
         factory.portal = portal.Portal(core.ssh.HoneyPotRealm(cfg))
-        factory.portal.registerChecker(core.auth.HoneypotPublicKeyChecker(cfg))
-        factory.portal.registerChecker(core.auth.HoneypotPasswordChecker(cfg))
+        factory.portal.registerChecker(cowrie.core.checkers.HoneypotPublicKeyChecker(cfg))
+        factory.portal.registerChecker(cowrie.core.checkers.HoneypotPasswordChecker(cfg))
+
+        if cfg.has_option('honeypot', 'auth_none_enabled') and \
+                 cfg.get('honeypot', 'auth_none_enabled').lower() in \
+                 ('yes', 'true', 'on'):
+            factory.portal.registerChecker(cowrie.core.checkers.HoneypotNoneChecker())
 
         top_service = top_service = service.MultiService()
 

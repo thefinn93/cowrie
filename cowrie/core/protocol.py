@@ -10,9 +10,9 @@ from twisted.conch import recvline
 from twisted.conch.insults import insults
 from twisted.python import log
 
-import honeypot
-import ttylog
-import utils
+from . import honeypot
+from . import ttylog
+from . import utils
 
 class HoneyPotBaseProtocol(insults.TerminalProtocol):
     def __init__(self, avatar, env):
@@ -53,10 +53,13 @@ class HoneyPotBaseProtocol(insults.TerminalProtocol):
             self.kippoIP = self.cfg.get('honeypot', 'internet_facing_ip')
         else:
             # Hack to get ip
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            self.kippoIP = s.getsockname()[0]
-            s.close()
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                self.kippoIP = s.getsockname()[0]
+                s.close()
+            except:
+                self.kippoIP = '192.168.0.1'
 
     # this is only called on explicit logout, not on disconnect
     # this indicates the closing of the channel/session, not the closing of the connection
@@ -221,10 +224,10 @@ class HoneyPotInteractiveProtocol(HoneyPotBaseProtocol, recvline.HistoricRecvLin
         return recvline.RecvLine.handle_RETURN(self)
 
     def handle_CTRL_C(self):
-        self.cmdstack[-1].ctrl_c()
+        self.cmdstack[-1].handle_CTRL_C()
 
     def handle_CTRL_D(self):
-        self.call_command(self.commands['exit'])
+        self.cmdstack[-1].handle_CTRL_D()
 
     def handle_TAB(self):
         self.cmdstack[-1].handle_TAB()
@@ -286,7 +289,7 @@ class LoggingServerProtocol(insults.ServerProtocol):
             ttylog.ttylog_write(transport.ttylog_file, len(data),
                 ttylog.TYPE_INPUT, time.time(), data)
         if self.stdinlog_open and not noLog:
-            log.msg("Saving stdin log: %s" % self.stdinlog_file)
+            log.msg("Saving %s bytes to stdin log: %s" % ( len(data), self.stdinlog_file))
             f = file(self.stdinlog_file, 'ab')
             f.write(data)
             f.close
