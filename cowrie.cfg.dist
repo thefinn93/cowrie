@@ -264,3 +264,6 @@ logfile = log/cowrie.json
 #identifier = abc123
 #secret = secret
 #debug=false
+
+#[database_anydb]
+#url = 'postgres:///cowrie'
